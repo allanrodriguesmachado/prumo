@@ -1,0 +1,107 @@
+name: prumo
+
+x-app: &app
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  image: prumo-app
+  volumes:
+    - .:/var/www/html
+  environment:
+    DB_HOST: db
+    DB_PORT: 5432
+    REDIS_HOST: redis
+    MAIL_HOST: mailpit
+    MAIL_PORT: 1025
+    OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  app:
+    <<: *app
+    ports:
+      - "${APP_PORT:-8080}:8000"
+
+  scheduler:
+    <<: *app
+    environment:
+      PRUMO_ROLE: worker
+      DB_HOST: db
+      DB_PORT: 5432
+      MAIL_HOST: mailpit
+      MAIL_PORT: 1025
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+    command: ["php", "artisan", "schedule:work"]
+
+  queue:
+    <<: *app
+    environment:
+      PRUMO_ROLE: worker
+      DB_HOST: db
+      DB_PORT: 5432
+      MAIL_HOST: mailpit
+      MAIL_PORT: 1025
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+    command: ["php", "artisan", "queue:work", "--tries=3", "--timeout=120"]
+
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:-prumo}
+      POSTGRES_USER: ${DB_USERNAME:-prumo}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-prumo}
+    ports:
+      - "${DB_FORWARD_PORT:-5434}:5432"
+    volumes:
+      - prumo-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-prumo} -d ${DB_DATABASE:-prumo}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - prumo-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "${MAILPIT_PORT:-8025}:8025"
+    restart: unless-stopped
+
+  node:
+    image: node:22-alpine
+    working_dir: /app
+    volumes:
+      - .:/app
+    profiles: ["tools"]
+    command: ["sh", "-c", "npm install && npm run build"]
+
+  # IA 100% gratuita e local (opcional): docker compose --profile ai up -d
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ai"]
+    volumes:
+      - prumo-ollama:/root/.ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    restart: unless-stopped
+
+volumes:
+  prumo-redis:
+  prumo-pg:
+  prumo-ollama:
